@@ -1,0 +1,185 @@
+#![feature(custom_derive, plugin)]
+#![plugin(serde_macros)]
+
+#[macro_use] extern crate log;
+extern crate ws;
+extern crate env_logger;
+extern crate serde;
+extern crate serde_json;
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::collections::HashSet;
+
+use serde_json::Value as Json;
+
+#[macro_export]
+macro_rules! json {
+    ( $data:expr ) => {{
+        use serde_json::to_value;
+        to_value(&$data)
+    }};
+
+    // trailing comma case
+    ( $($item:expr,)+ ) => ( json!($($item),+) );
+    ( $($key:expr => $value:expr,)+ ) => ( json!($($key => $value),+) );
+
+    ( $($item:expr),* ) => {
+        {
+            use serde_json::builder::ArrayBuilder;
+            let mut builder = ArrayBuilder::new();
+            $(
+                builder = builder.push($item);
+            )*
+            builder.unwrap()
+        }
+
+    };
+
+    ( $($key:expr => $value:expr),* ) => {
+        {
+            use serde_json::builder::ObjectBuilder;
+            let mut builder = ObjectBuilder::new();
+            $(
+                builder = builder.insert($key, $value);
+            )*
+            builder.unwrap()
+        }
+    };
+}
+
+const ADDR: &'static str = "127.0.0.1:3012";
+
+type MessageLog = Rc<RefCell<Vec<Message>>>;
+type Users = Rc<RefCell<HashSet<String>>>;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Wrapper {
+    path: String,
+    content: Json,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Message {
+    nick: String,
+    message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Join {
+    join_nick: String,
+}
+
+struct ChatHandler {
+    out: ws::Sender,
+    nick: Option<String>,
+    message_log: MessageLog,
+    users: Users,
+}
+
+impl ws::Handler for ChatHandler {
+
+    fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()> {
+        let backlog = self.message_log.borrow();
+        // We take two chunks because one chunk might not be a full 50
+        let mut it = backlog.chunks(50).rev().take(2);
+
+        let msgs1 = it.next();
+        let msgs2 = it.next();
+
+        // longwinded reverse
+        if let Some(msgs) = msgs2 {
+            for msg in msgs {
+                try!(self.out.send(format!("{:?}", json!{
+                    "path" => "/message",
+                    "content" => json!(msg.clone())
+                })))
+            }
+        }
+
+        if let Some(msgs) = msgs1 {
+            for msg in msgs {
+                try!(self.out.send(format!("{:?}", json!{
+                    "path" => "/message",
+                    "content" => json!(msg.clone())
+                })))
+            }
+        }
+        Ok(())
+    }
+
+    fn on_message(&mut self, msg: ws::Message) -> ws::Result<()> {
+        if let Ok(text_msg) = msg.clone().as_text() {
+            if let Ok(wrapper) = serde_json::from_str::<Wrapper>(text_msg) {
+                if let Ok(simple_msg) = serde_json::from_value::<Message>(wrapper.content.clone()) {
+                    self.message_log.borrow_mut().push(simple_msg);
+                    return self.out.broadcast(msg)
+                }
+
+                if let Ok(join) = serde_json::from_value::<Join>(wrapper.content.clone()) {
+                    if self.users.borrow().contains(&join.join_nick) {
+                        return self.out.send(format!("{:?}", json!{
+                            "path" => "/error",
+                            "content" => "A user by that name already exists.",
+                        }))
+                    }
+
+                    let join_msg = Message {
+                        nick: "system".into(),
+                        message: format!("{} has joined the chat.", join.join_nick),
+                    };
+                    self.users.borrow_mut().insert(join.join_nick.clone());
+                    self.nick = Some(join.join_nick);
+                    self.message_log.borrow_mut().push(join_msg.clone());
+                    return self.out.broadcast(format!("{:?}", json!{
+                        "path" => "/joined",
+                        "content" => json!(join_msg),
+                    }))
+                }
+            }
+        }
+        self.out.send(format!("{:?}", json!{
+            "path" => "/error",
+            "content" => format!("Unable to parse message {:?}", msg),
+        }))
+    }
+
+    fn on_close(&mut self, _: ws::CloseCode, _: &str) {
+        if let Some(nick) = self.nick.as_ref() {
+            self.users.borrow_mut().remove(nick);
+            let leave_msg = Message {
+                nick: "system".into(),
+                message: format!("{} has left the chat.", nick),
+            };
+            self.message_log.borrow_mut().push(leave_msg.clone());
+            if let Err(err) = self.out.broadcast(format!("{:?}", json!{
+                "path" => "/left",
+                "content" => json!(leave_msg),
+            })) {
+                error!("{:?}", err);
+            }
+        }
+    }
+}
+
+fn main () {
+
+    // Setup logging
+    env_logger::init().unwrap();
+
+    let message_log = MessageLog::new(RefCell::new(Vec::with_capacity(10_000)));
+    let users = Users::new(RefCell::new(HashSet::with_capacity(10_000)));
+
+    if let Err(error) = ws::listen(ADDR, |out| {
+        ChatHandler {
+            out: out,
+            nick: None,
+            message_log: message_log.clone(),
+            users: users.clone(),
+        }
+
+    }) {
+        // Inform the user of failure
+        error!("Failed to create WebSocket due to {:?}", error);
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "ws-chat-server"
+version = "0.1.0"
+authors = ["Jason Housley <HousleyJK@gmail.com>"]
+
+[dependencies]
+ws = "*"
+log = "*"
+env_logger = "*"
+serde = "*"
+serde_json = "*"
+serde_macros = "*"

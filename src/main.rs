@@ -7,6 +7,7 @@ extern crate env_logger;
 extern crate serde;
 extern crate serde_json;
 
+use std::fs::OpenOptions;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::HashSet;
@@ -49,6 +50,9 @@ macro_rules! json {
 }
 
 const ADDR: &'static str = "127.0.0.1:3012";
+const SAVE: ws::util::Token = ws::util::Token(1);
+const FILE: &'static str = "message_log";
+const SAVE_TIME: u64 = 500;
 
 type MessageLog = Rc<RefCell<Vec<Message>>>;
 type Users = Rc<RefCell<HashSet<String>>>;
@@ -80,6 +84,7 @@ struct ChatHandler {
 impl ws::Handler for ChatHandler {
 
     fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()> {
+        try!(self.out.timeout(SAVE_TIME, SAVE));
         let backlog = self.message_log.borrow();
         // We take two chunks because one chunk might not be a full 50
         let mut it = backlog.chunks(50).rev().take(2);
@@ -160,6 +165,20 @@ impl ws::Handler for ChatHandler {
             }
         }
     }
+
+    fn on_timeout(&mut self, _: ws::util::Token) -> ws::Result<()> {
+        // the only timeout is SAVE
+        // this blocks but hopefully diskio will be fast
+        let mut file = try!(OpenOptions::new().write(true).open(FILE));
+        if let Err(err) = serde_json::to_writer_pretty::<_, Vec<Message>>(
+            &mut file,
+            self.message_log.borrow().as_ref())
+        {
+           Ok(error!("{:?}", err))
+        } else {
+            self.out.timeout(SAVE_TIME, SAVE)
+        }
+    }
 }
 
 fn main () {
@@ -167,7 +186,20 @@ fn main () {
     // Setup logging
     env_logger::init().unwrap();
 
-    let message_log = MessageLog::new(RefCell::new(Vec::with_capacity(10_000)));
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(FILE)
+        .expect("Unable to open message log.");
+
+    let message_log = MessageLog::new(
+        RefCell::new(
+            serde_json::from_reader(
+                &mut file,
+            ).unwrap_or(
+                Vec::with_capacity(10_000))));
+
     let users = Users::new(RefCell::new(HashSet::with_capacity(10_000)));
 
     if let Err(error) = ws::listen(ADDR, |out| {

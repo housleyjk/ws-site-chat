@@ -186,6 +186,7 @@ impl ws::Handler for ChatHandler {
                 try!(self.out.ping(Vec::new()));
                 self.out.timeout(PING_TIME, PING)
             }
+            _ => unreachable!()
         }
     }
 }

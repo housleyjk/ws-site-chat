@@ -51,8 +51,10 @@ macro_rules! json {
 
 const ADDR: &'static str = "127.0.0.1:3012";
 const SAVE: ws::util::Token = ws::util::Token(1);
+const PING: ws::util::Token = ws::util::Token(2);
 const FILE: &'static str = "message_log";
 const SAVE_TIME: u64 = 500;
+const PING_TIME: u64 = 10_000;
 
 type MessageLog = Rc<RefCell<Vec<Message>>>;
 type Users = Rc<RefCell<HashSet<String>>>;
@@ -85,6 +87,7 @@ impl ws::Handler for ChatHandler {
 
     fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()> {
         try!(self.out.timeout(SAVE_TIME, SAVE));
+        try!(self.out.timeout(PING_TIME, PING));
         let backlog = self.message_log.borrow();
         // We take two chunks because one chunk might not be a full 50
         let mut it = backlog.chunks(50).rev().take(2);
@@ -166,17 +169,23 @@ impl ws::Handler for ChatHandler {
         }
     }
 
-    fn on_timeout(&mut self, _: ws::util::Token) -> ws::Result<()> {
-        // the only timeout is SAVE
-        // this blocks but hopefully diskio will be fast
-        let mut file = try!(OpenOptions::new().write(true).open(FILE));
-        if let Err(err) = serde_json::to_writer_pretty::<_, Vec<Message>>(
-            &mut file,
-            self.message_log.borrow().as_ref())
-        {
-           Ok(error!("{:?}", err))
-        } else {
-            self.out.timeout(SAVE_TIME, SAVE)
+    fn on_timeout(&mut self, tok: ws::util::Token) -> ws::Result<()> {
+        match tok {
+            SAVE => {
+                let mut file = try!(OpenOptions::new().write(true).open(FILE));
+                if let Err(err) = serde_json::to_writer_pretty::<_, Vec<Message>>(
+                    &mut file,
+                    self.message_log.borrow().as_ref())
+                {
+                   Ok(error!("{:?}", err))
+                } else {
+                    self.out.timeout(SAVE_TIME, SAVE)
+                }
+            }
+            PING => {
+                try!(self.out.ping(Vec::new()));
+                self.out.timeout(PING_TIME, PING)
+            }
         }
     }
 }

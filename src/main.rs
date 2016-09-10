@@ -221,7 +221,6 @@ fn main () {
         }
 
     }) {
-        // Inform the user of failure
         error!("Failed to create WebSocket due to {:?}", error);
     }
 }

@@ -32,7 +32,7 @@ macro_rules! json {
             $(
                 builder = builder.push($item);
             )*
-            builder.unwrap()
+            builder.build()
         }
 
     };
@@ -44,7 +44,7 @@ macro_rules! json {
             $(
                 builder = builder.insert($key, $value);
             )*
-            builder.unwrap()
+            builder.build()
         }
     };
 }

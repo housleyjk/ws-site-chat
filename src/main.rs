@@ -1,11 +1,9 @@
-#![feature(custom_derive, plugin)]
-#![plugin(serde_macros)]
-
 #[macro_use] extern crate log;
 extern crate ws;
 extern crate env_logger;
 extern crate serde;
-extern crate serde_json;
+#[macro_use] extern crate serde_json;
+#[macro_use] extern crate serde_derive;
 
 use std::fs::OpenOptions;
 use std::cell::RefCell;
@@ -13,41 +11,6 @@ use std::rc::Rc;
 use std::collections::HashSet;
 
 use serde_json::Value as Json;
-
-#[macro_export]
-macro_rules! json {
-    ( $data:expr ) => {{
-        use serde_json::to_value;
-        to_value(&$data)
-    }};
-
-    // trailing comma case
-    ( $($item:expr,)+ ) => ( json!($($item),+) );
-    ( $($key:expr => $value:expr,)+ ) => ( json!($($key => $value),+) );
-
-    ( $($item:expr),* ) => {
-        {
-            use serde_json::builder::ArrayBuilder;
-            let mut builder = ArrayBuilder::new();
-            $(
-                builder = builder.push($item);
-            )*
-            builder.build()
-        }
-
-    };
-
-    ( $($key:expr => $value:expr),* ) => {
-        {
-            use serde_json::builder::ObjectBuilder;
-            let mut builder = ObjectBuilder::new();
-            $(
-                builder = builder.insert($key, $value);
-            )*
-            builder.build()
-        }
-    };
-}
 
 const ADDR: &'static str = "127.0.0.1:3012";
 const SAVE: ws::util::Token = ws::util::Token(1);
@@ -98,19 +61,20 @@ impl ws::Handler for ChatHandler {
         // longwinded reverse
         if let Some(msgs) = msgs2 {
             for msg in msgs {
-                try!(self.out.send(format!("{:?}", json!{
-                    "path" => "/message",
-                    "content" => json!(msg.clone())
-                })))
+
+                try!(self.out.send(format!("{:?}", json!({
+                    "path": "/message",
+                    "content": msg.clone(),
+                }))))
             }
         }
 
         if let Some(msgs) = msgs1 {
             for msg in msgs {
-                try!(self.out.send(format!("{:?}", json!{
-                    "path" => "/message",
-                    "content" => json!(msg.clone())
-                })))
+                try!(self.out.send(format!("{:?}", json!({
+                    "path": "/message",
+                    "content": msg.clone(),
+                }))))
             }
         }
         Ok(())
@@ -126,10 +90,10 @@ impl ws::Handler for ChatHandler {
 
                 if let Ok(join) = serde_json::from_value::<Join>(wrapper.content.clone()) {
                     if self.users.borrow().contains(&join.join_nick) {
-                        return self.out.send(format!("{:?}", json!{
-                            "path" => "/error",
-                            "content" => "A user by that name already exists.",
-                        }))
+                        return self.out.send(format!("{:?}", json!({
+                            "path": "/error",
+                            "content": "A user by that name already exists.",
+                        })))
                     }
 
                     let join_msg = Message {
@@ -139,17 +103,17 @@ impl ws::Handler for ChatHandler {
                     self.users.borrow_mut().insert(join.join_nick.clone());
                     self.nick = Some(join.join_nick);
                     self.message_log.borrow_mut().push(join_msg.clone());
-                    return self.out.broadcast(format!("{:?}", json!{
-                        "path" => "/joined",
-                        "content" => json!(join_msg),
-                    }))
+                    return self.out.broadcast(format!("{:?}", json!({
+                        "path": "/joined",
+                        "content": join_msg,
+                    })))
                 }
             }
         }
-        self.out.send(format!("{:?}", json!{
-            "path" => "/error",
-            "content" => format!("Unable to parse message {:?}", msg),
-        }))
+        self.out.send(format!("{:?}", json!({
+            "path": "/error",
+            "content": format!("Unable to parse message {:?}", msg),
+        })))
     }
 
     fn on_close(&mut self, _: ws::CloseCode, _: &str) {
@@ -160,10 +124,10 @@ impl ws::Handler for ChatHandler {
                 message: format!("{} has left the chat.", nick),
             };
             self.message_log.borrow_mut().push(leave_msg.clone());
-            if let Err(err) = self.out.broadcast(format!("{:?}", json!{
-                "path" => "/left",
-                "content" => json!(leave_msg),
-            })) {
+            if let Err(err) = self.out.broadcast(format!("{:?}", json!({
+                "path": "/left",
+                "content": leave_msg,
+            }))) {
                 error!("{:?}", err);
             }
         }

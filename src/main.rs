@@ -1,4 +1,5 @@
 #[macro_use] extern crate log;
+extern crate time;
 extern crate ws;
 extern crate env_logger;
 extern crate serde;
@@ -19,7 +20,7 @@ const FILE: &'static str = "message_log";
 const SAVE_TIME: u64 = 500;
 const PING_TIME: u64 = 10_000;
 
-type MessageLog = Rc<RefCell<Vec<Message>>>;
+type MessageLog = Rc<RefCell<Vec<LogMessage>>>;
 type Users = Rc<RefCell<HashSet<String>>>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -37,6 +38,32 @@ struct Message {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Join {
     join_nick: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct LogMessage {
+    nick: String,
+    sent: i64,
+    message: String,
+}
+
+impl LogMessage {
+    fn to_message(&self) -> Message {
+        Message {
+            nick: self.nick.clone(),
+            message: self.message.clone(),
+        }
+    }
+}
+
+impl Message {
+    fn into_log(self) -> LogMessage {
+        LogMessage {
+            nick: self.nick,
+            message: self.message,
+            sent: time::get_time().sec, // discard nanoseconds
+        }
+    }
 }
 
 struct ChatHandler {
@@ -61,22 +88,26 @@ impl ws::Handler for ChatHandler {
         // longwinded reverse
         if let Some(msgs) = msgs2 {
             for msg in msgs {
-
-                try!(self.out.send(format!("{:?}", json!({
-                    "path": "/message",
-                    "content": msg.clone(),
-                }))))
+                if time::get_time() - time::Timespec::new(msg.sent, 0) < time::Duration::minutes(10) {
+                    try!(self.out.send(format!("{:?}", json!({
+                        "path": "/message",
+                        "content": msg.to_message(),
+                    }))))
+                }
             }
         }
 
         if let Some(msgs) = msgs1 {
             for msg in msgs {
-                try!(self.out.send(format!("{:?}", json!({
-                    "path": "/message",
-                    "content": msg.clone(),
-                }))))
+                if  time::get_time() - time::Timespec::new(msg.sent, 0) < time::Duration::minutes(10) {
+                    try!(self.out.send(format!("{:?}", json!({
+                        "path": "/message",
+                        "content": msg.to_message(),
+                    }))))
+                }
             }
         }
+
         Ok(())
     }
 
@@ -84,7 +115,7 @@ impl ws::Handler for ChatHandler {
         if let Ok(text_msg) = msg.clone().as_text() {
             if let Ok(wrapper) = serde_json::from_str::<Wrapper>(text_msg) {
                 if let Ok(simple_msg) = serde_json::from_value::<Message>(wrapper.content.clone()) {
-                    self.message_log.borrow_mut().push(simple_msg);
+                    self.message_log.borrow_mut().push(simple_msg.into_log());
                     return self.out.broadcast(msg)
                 }
 
@@ -102,7 +133,7 @@ impl ws::Handler for ChatHandler {
                     };
                     self.users.borrow_mut().insert(join.join_nick.clone());
                     self.nick = Some(join.join_nick);
-                    self.message_log.borrow_mut().push(join_msg.clone());
+                    self.message_log.borrow_mut().push(join_msg.clone().into_log());
                     return self.out.broadcast(format!("{:?}", json!({
                         "path": "/joined",
                         "content": join_msg,
@@ -123,7 +154,7 @@ impl ws::Handler for ChatHandler {
                 nick: "system".into(),
                 message: format!("{} has left the chat.", nick),
             };
-            self.message_log.borrow_mut().push(leave_msg.clone());
+            self.message_log.borrow_mut().push(leave_msg.clone().clone().into_log());
             if let Err(err) = self.out.broadcast(format!("{:?}", json!({
                 "path": "/left",
                 "content": leave_msg,
@@ -137,7 +168,7 @@ impl ws::Handler for ChatHandler {
         match tok {
             SAVE => {
                 let mut file = try!(OpenOptions::new().write(true).open(FILE));
-                if let Err(err) = serde_json::to_writer_pretty::<_, Vec<Message>>(
+                if let Err(err) = serde_json::to_writer_pretty::<_, Vec<LogMessage>>(
                     &mut file,
                     self.message_log.borrow().as_ref())
                 {

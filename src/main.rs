@@ -43,7 +43,7 @@ struct Join {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct LogMessage {
     nick: String,
-    sent: i64,
+    sent: Option<i64>,
     message: String,
 }
 
@@ -88,22 +88,26 @@ impl ws::Handler for ChatHandler {
         // longwinded reverse
         if let Some(msgs) = msgs2 {
             for msg in msgs {
-                if time::get_time() - time::Timespec::new(msg.sent, 0) < time::Duration::minutes(10) {
-                    try!(self.out.send(format!("{:?}", json!({
-                        "path": "/message",
-                        "content": msg.to_message(),
-                    }))))
+                if let Some(sent) = msg.sent {
+                    if time::get_time() - time::Timespec::new(sent, 0) < time::Duration::minutes(10) {
+                        try!(self.out.send(format!("{:?}", json!({
+                            "path": "/message",
+                            "content": msg.to_message(),
+                        }))))
+                    }
                 }
             }
         }
 
         if let Some(msgs) = msgs1 {
             for msg in msgs {
-                if  time::get_time() - time::Timespec::new(msg.sent, 0) < time::Duration::minutes(10) {
-                    try!(self.out.send(format!("{:?}", json!({
-                        "path": "/message",
-                        "content": msg.to_message(),
-                    }))))
+                if let Some(sent) = msg.sent {
+                    if  time::get_time() - time::Timespec::new(sent, 0) < time::Duration::minutes(10) {
+                        try!(self.out.send(format!("{:?}", json!({
+                            "path": "/message",
+                            "content": msg.to_message(),
+                        }))))
+                    }
                 }
             }
         }

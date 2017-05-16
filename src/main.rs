@@ -61,7 +61,7 @@ impl Message {
         LogMessage {
             nick: self.nick,
             message: self.message,
-            sent: time::get_time().sec, // discard nanoseconds
+            sent: Some(time::get_time().sec), // discard nanoseconds
         }
     }
 }

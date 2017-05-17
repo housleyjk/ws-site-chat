@@ -1,11 +1,10 @@
-#![feature(custom_derive, plugin)]
-#![plugin(serde_macros)]
-
 #[macro_use] extern crate log;
+extern crate time;
 extern crate ws;
 extern crate env_logger;
 extern crate serde;
-extern crate serde_json;
+#[macro_use] extern crate serde_json;
+#[macro_use] extern crate serde_derive;
 
 use std::fs::OpenOptions;
 use std::cell::RefCell;
@@ -14,41 +13,6 @@ use std::collections::HashSet;
 
 use serde_json::Value as Json;
 
-#[macro_export]
-macro_rules! json {
-    ( $data:expr ) => {{
-        use serde_json::to_value;
-        to_value(&$data)
-    }};
-
-    // trailing comma case
-    ( $($item:expr,)+ ) => ( json!($($item),+) );
-    ( $($key:expr => $value:expr,)+ ) => ( json!($($key => $value),+) );
-
-    ( $($item:expr),* ) => {
-        {
-            use serde_json::builder::ArrayBuilder;
-            let mut builder = ArrayBuilder::new();
-            $(
-                builder = builder.push($item);
-            )*
-            builder.build()
-        }
-
-    };
-
-    ( $($key:expr => $value:expr),* ) => {
-        {
-            use serde_json::builder::ObjectBuilder;
-            let mut builder = ObjectBuilder::new();
-            $(
-                builder = builder.insert($key, $value);
-            )*
-            builder.build()
-        }
-    };
-}
-
 const ADDR: &'static str = "127.0.0.1:3012";
 const SAVE: ws::util::Token = ws::util::Token(1);
 const PING: ws::util::Token = ws::util::Token(2);
@@ -56,7 +20,7 @@ const FILE: &'static str = "message_log";
 const SAVE_TIME: u64 = 500;
 const PING_TIME: u64 = 10_000;
 
-type MessageLog = Rc<RefCell<Vec<Message>>>;
+type MessageLog = Rc<RefCell<Vec<LogMessage>>>;
 type Users = Rc<RefCell<HashSet<String>>>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -74,6 +38,32 @@ struct Message {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Join {
     join_nick: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct LogMessage {
+    nick: String,
+    sent: Option<i64>,
+    message: String,
+}
+
+impl LogMessage {
+    fn to_message(&self) -> Message {
+        Message {
+            nick: self.nick.clone(),
+            message: self.message.clone(),
+        }
+    }
+}
+
+impl Message {
+    fn into_log(self) -> LogMessage {
+        LogMessage {
+            nick: self.nick,
+            message: self.message,
+            sent: Some(time::get_time().sec), // discard nanoseconds
+        }
+    }
 }
 
 struct ChatHandler {
@@ -98,21 +88,30 @@ impl ws::Handler for ChatHandler {
         // longwinded reverse
         if let Some(msgs) = msgs2 {
             for msg in msgs {
-                try!(self.out.send(format!("{:?}", json!{
-                    "path" => "/message",
-                    "content" => json!(msg.clone())
-                })))
+                if let Some(sent) = msg.sent {
+                    if time::get_time() - time::Timespec::new(sent, 0) < time::Duration::minutes(10) {
+                        try!(self.out.send(format!("{:?}", json!({
+                            "path": "/message",
+                            "content": msg.to_message(),
+                        }))))
+                    }
+                }
             }
         }
 
         if let Some(msgs) = msgs1 {
             for msg in msgs {
-                try!(self.out.send(format!("{:?}", json!{
-                    "path" => "/message",
-                    "content" => json!(msg.clone())
-                })))
+                if let Some(sent) = msg.sent {
+                    if  time::get_time() - time::Timespec::new(sent, 0) < time::Duration::minutes(10) {
+                        try!(self.out.send(format!("{:?}", json!({
+                            "path": "/message",
+                            "content": msg.to_message(),
+                        }))))
+                    }
+                }
             }
         }
+
         Ok(())
     }
 
@@ -120,16 +119,16 @@ impl ws::Handler for ChatHandler {
         if let Ok(text_msg) = msg.clone().as_text() {
             if let Ok(wrapper) = serde_json::from_str::<Wrapper>(text_msg) {
                 if let Ok(simple_msg) = serde_json::from_value::<Message>(wrapper.content.clone()) {
-                    self.message_log.borrow_mut().push(simple_msg);
+                    self.message_log.borrow_mut().push(simple_msg.into_log());
                     return self.out.broadcast(msg)
                 }
 
                 if let Ok(join) = serde_json::from_value::<Join>(wrapper.content.clone()) {
                     if self.users.borrow().contains(&join.join_nick) {
-                        return self.out.send(format!("{:?}", json!{
-                            "path" => "/error",
-                            "content" => "A user by that name already exists.",
-                        }))
+                        return self.out.send(format!("{:?}", json!({
+                            "path": "/error",
+                            "content": "A user by that name already exists.",
+                        })))
                     }
 
                     let join_msg = Message {
@@ -138,18 +137,18 @@ impl ws::Handler for ChatHandler {
                     };
                     self.users.borrow_mut().insert(join.join_nick.clone());
                     self.nick = Some(join.join_nick);
-                    self.message_log.borrow_mut().push(join_msg.clone());
-                    return self.out.broadcast(format!("{:?}", json!{
-                        "path" => "/joined",
-                        "content" => json!(join_msg),
-                    }))
+                    self.message_log.borrow_mut().push(join_msg.clone().into_log());
+                    return self.out.broadcast(format!("{:?}", json!({
+                        "path": "/joined",
+                        "content": join_msg,
+                    })))
                 }
             }
         }
-        self.out.send(format!("{:?}", json!{
-            "path" => "/error",
-            "content" => format!("Unable to parse message {:?}", msg),
-        }))
+        self.out.send(format!("{:?}", json!({
+            "path": "/error",
+            "content": format!("Unable to parse message {:?}", msg),
+        })))
     }
 
     fn on_close(&mut self, _: ws::CloseCode, _: &str) {
@@ -159,11 +158,11 @@ impl ws::Handler for ChatHandler {
                 nick: "system".into(),
                 message: format!("{} has left the chat.", nick),
             };
-            self.message_log.borrow_mut().push(leave_msg.clone());
-            if let Err(err) = self.out.broadcast(format!("{:?}", json!{
-                "path" => "/left",
-                "content" => json!(leave_msg),
-            })) {
+            self.message_log.borrow_mut().push(leave_msg.clone().clone().into_log());
+            if let Err(err) = self.out.broadcast(format!("{:?}", json!({
+                "path": "/left",
+                "content": leave_msg,
+            }))) {
                 error!("{:?}", err);
             }
         }
@@ -173,7 +172,7 @@ impl ws::Handler for ChatHandler {
         match tok {
             SAVE => {
                 let mut file = try!(OpenOptions::new().write(true).open(FILE));
-                if let Err(err) = serde_json::to_writer_pretty::<_, Vec<Message>>(
+                if let Err(err) = serde_json::to_writer_pretty::<_, Vec<LogMessage>>(
                     &mut file,
                     self.message_log.borrow().as_ref())
                 {

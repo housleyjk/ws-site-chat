@@ -6,7 +6,8 @@ authors = ["Jason Housley <HousleyJK@gmail.com>"]
 [dependencies]
 ws = "*"
 log = "*"
+time = "*"
 env_logger = "*"
 serde = "*"
 serde_json = "*"
-serde_macros = "*"
+serde_derive = "*"
